@@ -68,3 +68,5 @@ pytest tests/ -v
 - `yfinance` for market data
 - `sqlite3` (stdlib) for storage
 - `pytest` for testing
+
+This project was created with the assistance of Claude Code
