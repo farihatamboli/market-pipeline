@@ -10,7 +10,7 @@ A real-time market data pipeline with anomaly detection, a live web dashboard, a
 |--------|--------|--------------|
 | [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-Demo-222?logo=github&logoColor=white)](https://farihatamboli.github.io/market-pipeline/) | Zero setup | Static demo with simulated live data |
 | [![Launch Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/farihatamboli/market-pipeline/HEAD?urlpath=proxy/5050/) | ~2 min cold start | Real Flask app, real yfinance data, in-browser |
-| [![Live App](https://img.shields.io/badge/Live%20App-Railway-0B0D0E?logo=railway&logoColor=white)](https://market-pipeline.up.railway.app) | Always on | Full deployment, real data, shareable URL |
+| [![Live App](market-pipeline-production.up.railway.app) | Always on | Full deployment, real data, shareable URL |
 
 > **Quickest:** Click GitHub Pages — no wait, no account needed.
 
