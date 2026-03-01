@@ -157,6 +157,17 @@ def stream(symbol):
     )
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+import threading
+from src.pipeline import run_pipeline
+
+def start_pipeline():
+    run_pipeline(
+        symbols=['AAPL', 'MSFT', 'SPY', 'NVDA', 'TSLA'],
+        interval_seconds=60,
+    )
+
+thread = threading.Thread(target=start_pipeline, daemon=True)
+thread.start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))
