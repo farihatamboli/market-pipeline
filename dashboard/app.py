@@ -1,11 +1,9 @@
 """
 dashboard/app.py — Flask web dashboard with SSE streaming.
 
-Uses Server-Sent Events (SSE) over WebSockets deliberately:
-  - Plain HTTP, no extra library
-  - Auto-reconnects on failure
-  - Works through proxies and load balancers
-  - Right fit for one-directional server → browser streaming
+On startup, kicks off the market data pipeline in a background thread
+so signals are detected and the DB is populated automatically —
+no need to run main.py separately.
 """
 
 import json
@@ -84,9 +82,10 @@ def get_latest_tick(symbol: str) -> dict | None:
     finally:
         conn.close()
 
-# ── Demo data (when DB is empty) ──────────────────────────────────────────────
+# ── Demo data (shown before first real tick arrives) ──────────────────────────
 
 _BASES = {"AAPL": 182.5, "MSFT": 415.0, "SPY": 512.0, "NVDA": 875.0, "TSLA": 175.0}
+_demo_state: dict[str, float] = {}
 
 def demo_ticks(symbol: str, n: int = 60) -> list[dict]:
     base  = _BASES.get(symbol, 150.0)
@@ -104,21 +103,19 @@ def demo_ticks(symbol: str, n: int = 60) -> list[dict]:
                       "high": round(high, 2), "low": round(low, 2), "vwap": round(vwap, 2)})
     return ticks
 
-_demo_state: dict[str, float] = {}
-
 def demo_next_tick(symbol: str) -> dict:
-    base  = _BASES.get(symbol, 150.0)
-    p     = _demo_state.get(symbol, base)
-    p    += random.gauss(0, base * 0.001)
+    base = _BASES.get(symbol, 150.0)
+    p    = _demo_state.get(symbol, base)
+    p   += random.gauss(0, base * 0.001)
     _demo_state[symbol] = p
-    vol   = int(random.lognormvariate(11, 0.8))
+    vol  = int(random.lognormvariate(11, 0.8))
     return {
-        "ts":    datetime.utcnow().isoformat(),
-        "price": round(p, 2),
+        "ts":     datetime.utcnow().isoformat(),
+        "price":  round(p, 2),
         "volume": vol,
-        "high":  round(p + abs(random.gauss(0, 0.2)), 2),
-        "low":   round(p - abs(random.gauss(0, 0.2)), 2),
-        "vwap":  round(p + random.gauss(0, 0.1), 2),
+        "high":   round(p + abs(random.gauss(0, 0.2)), 2),
+        "low":    round(p - abs(random.gauss(0, 0.2)), 2),
+        "vwap":   round(p + random.gauss(0, 0.1), 2),
     }
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -156,18 +153,61 @@ def stream(symbol):
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
+# ── Background pipeline ───────────────────────────────────────────────────────
+
+def _start_pipeline():
+    """
+    Run the polling pipeline in a background daemon thread.
+    Fires automatically on server startup — no need to run main.py separately.
+    Signals are written to the in-memory buffer and appear in /api/signals.
+    """
+    import logging
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+
+    from src.storage import DataStore
+    from src.fetcher import MarketFetcher
+    from src.signals import SignalDetector
+    from src.alerts  import AlertManager, BaseChannel
+    from src.signals import Signal
+
+    # Custom alert channel that pushes into the dashboard's signal buffer
+    class DashboardChannel(BaseChannel):
+        def send(self, signal: Signal):
+            push_signal({
+                "ts":      signal.timestamp.isoformat(),
+                "type":    signal.signal_type,
+                "symbol":  signal.symbol,
+                "price":   signal.price,
+                "message": signal.message,
+            })
+
+    store    = DataStore(); store.initialize()
+    fetcher  = MarketFetcher()
+    detector = SignalDetector()
+    alerts   = AlertManager(channels=[DashboardChannel()])
+    symbols  = ["AAPL", "MSFT", "SPY", "NVDA", "TSLA"]
+
+    logging.info("Background pipeline started.")
+    while True:
+        for sym in symbols:
+            try:
+                tick = fetcher.fetch(sym)
+                if tick is None:
+                    continue
+                store.insert_tick(tick)
+                history = store.get_recent(sym, 50)
+                for sig in detector.detect(tick, history):
+                    alerts.fire(sig)
+            except Exception as e:
+                logging.error(f"Pipeline error ({sym}): {e}")
+        time.sleep(60)
+
+
+_pipeline_thread = threading.Thread(target=_start_pipeline, daemon=True)
+_pipeline_thread.start()
+
 # ── Entry point ───────────────────────────────────────────────────────────────
-import threading
-from src.pipeline import run_pipeline
-
-def start_pipeline():
-    run_pipeline(
-        symbols=['AAPL', 'MSFT', 'SPY', 'NVDA', 'TSLA'],
-        interval_seconds=60,
-    )
-
-thread = threading.Thread(target=start_pipeline, daemon=True)
-thread.start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))
