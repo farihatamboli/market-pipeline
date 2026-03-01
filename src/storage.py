@@ -1,10 +1,9 @@
 """
-storage.py — Lightweight SQLite storage for market ticks.
+src/storage.py — SQLite tick store.
 
-Why SQLite?
-- Zero infrastructure — no Docker, no server
-- Queryable with pandas or SQL for backtesting later
-- Easy to swap for Postgres/TimescaleDB in production
+Zero infrastructure — no Docker, no server needed locally.
+Swap DataStore for a TimescaleDB adapter in production by implementing
+the same insert_tick / get_recent / get_range interface.
 """
 
 import sqlite3
@@ -20,76 +19,78 @@ DB_PATH = Path(__file__).parent.parent / "data" / "ticks.db"
 
 
 class DataStore:
-    """Persists tick data to SQLite and retrieves historical windows."""
 
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
         self.conn: sqlite3.Connection | None = None
 
     def initialize(self):
-        """Create the DB and ticks table if they don't exist."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path))
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS ticks (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol    TEXT    NOT NULL,
-                ts        TEXT    NOT NULL,
-                price     REAL    NOT NULL,
-                volume    INTEGER NOT NULL,
-                open      REAL,
-                high      REAL,
-                low       REAL,
-                vwap      REAL
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol  TEXT    NOT NULL,
+                ts      TEXT    NOT NULL,
+                price   REAL    NOT NULL,
+                volume  INTEGER NOT NULL,
+                open    REAL,
+                high    REAL,
+                low     REAL,
+                vwap    REAL
             )
         """)
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_symbol_ts ON ticks(symbol, ts)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_symbol_ts ON ticks(symbol, ts)"
+        )
         self.conn.commit()
-        logger.info(f"DataStore initialized at {self.db_path}")
+        logger.info(f"DataStore ready at {self.db_path}")
 
     def insert_tick(self, tick: Tick):
-        """Persist a single tick to the database."""
         self.conn.execute("""
             INSERT INTO ticks (symbol, ts, price, volume, open, high, low, vwap)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            tick.symbol,
-            tick.timestamp.isoformat(),
-            tick.price,
-            tick.volume,
-            tick.open,
-            tick.high,
-            tick.low,
-            tick.vwap,
-        ))
+        """, (tick.symbol, tick.timestamp.isoformat(),
+              tick.price, tick.volume,
+              tick.open, tick.high, tick.low, tick.vwap))
         self.conn.commit()
 
     def get_recent(self, symbol: str, n: int = 50) -> list[Tick]:
-        """Retrieve the N most recent ticks for a symbol (oldest first)."""
-        cursor = self.conn.execute("""
+        cur = self.conn.execute("""
             SELECT symbol, ts, price, volume, open, high, low, vwap
-            FROM ticks
-            WHERE symbol = ?
-            ORDER BY ts DESC
-            LIMIT ?
+            FROM ticks WHERE symbol = ?
+            ORDER BY ts DESC LIMIT ?
         """, (symbol, n))
+        rows = cur.fetchall()
+        return [self._row_to_tick(r) for r in reversed(rows)]
 
-        rows = cursor.fetchall()
-        ticks = []
-        for row in reversed(rows):  # oldest first
-            ticks.append(Tick(
-                symbol=row[0],
-                timestamp=datetime.fromisoformat(row[1]),
-                price=row[2],
-                volume=row[3],
-                open=row[4],
-                high=row[5],
-                low=row[6],
-                vwap=row[7],
-            ))
-        return ticks
+    def get_range(self, symbol: str, start: str, end: str) -> list[Tick]:
+        """Fetch ticks between two ISO timestamps — used by backtester."""
+        cur = self.conn.execute("""
+            SELECT symbol, ts, price, volume, open, high, low, vwap
+            FROM ticks WHERE symbol = ? AND ts >= ? AND ts <= ?
+            ORDER BY ts ASC
+        """, (symbol, start, end))
+        return [self._row_to_tick(r) for r in cur.fetchall()]
+
+    def get_symbols(self) -> list[str]:
+        cur = self.conn.execute(
+            "SELECT DISTINCT symbol FROM ticks ORDER BY symbol"
+        )
+        return [r[0] for r in cur.fetchall()]
+
+    def _row_to_tick(self, row) -> Tick:
+        return Tick(
+            symbol    = row[0],
+            timestamp = datetime.fromisoformat(row[1]),
+            price     = row[2],
+            volume    = row[3],
+            open      = row[4],
+            high      = row[5],
+            low       = row[6],
+            vwap      = row[7],
+        )
 
     def close(self):
         if self.conn:
             self.conn.close()
-            logger.info("DataStore connection closed.")

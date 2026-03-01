@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+
+  # ── Dashboard ─────────────────────────────────────────────────────────────
+  dashboard:
+    build: .
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./data:/app/data      # shared SQLite DB
+      - ./logs:/app/logs
+    environment:
+      - PORT=5050
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5050/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── Pipeline (yfinance polling) ───────────────────────────────────────────
+  pipeline:
+    build: .
+    command: python main.py --symbols AAPL MSFT SPY NVDA TSLA --interval 60
+    volumes:
+      - ./data:/app/data      # writes to same DB as dashboard
+      - ./logs:/app/logs
+    depends_on:
+      - dashboard
+    restart: unless-stopped
+
+  # ── Pipeline (Alpaca real-time stream) ───────────────────────────────────
+  # Uncomment to use Alpaca instead of yfinance polling.
+  # Requires ALPACA_API_KEY and ALPACA_SECRET_KEY.
+  #
+  # alpaca:
+  #   build: .
+  #   command: python -c "
+  #     from src.alpaca_stream import AlpacaStream
+  #     from src.storage import DataStore
+  #     from src.signals import SignalDetector
+  #     from src.alerts import AlertManager
+  #     store = DataStore(); store.initialize()
+  #     detector = SignalDetector()
+  #     alerts = AlertManager()
+  #     def on_tick(tick):
+  #         store.insert_tick(tick)
+  #         history = store.get_recent(tick.symbol, 50)
+  #         for sig in detector.detect(tick, history): alerts.fire(sig)
+  #     AlpacaStream(['AAPL','MSFT','SPY'], on_tick).run()
+  #   "
+  #   volumes:
+  #     - ./data:/app/data
+  #     - ./logs:/app/logs
+  #   environment:
+  #     - ALPACA_API_KEY=${ALPACA_API_KEY}
+  #     - ALPACA_SECRET_KEY=${ALPACA_SECRET_KEY}
+  #   restart: unless-stopped
