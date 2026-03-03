@@ -1,59 +1,56 @@
-version: "3.9"
-
 services:
 
-  # ── Dashboard ─────────────────────────────────────────────────────────────
+  # TimescaleDB
+  db:
+    image: timescale/timescaledb:latest-pg15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       marketdata
+      POSTGRES_USER:     mdp
+      POSTGRES_PASSWORD: mdp_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mdp -d marketdata"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Web Dashboard
   dashboard:
     build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "5050:5050"
-    volumes:
-      - ./data:/app/data      # shared SQLite DB
-      - ./logs:/app/logs
     environment:
-      - PORT=5050
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5050/"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      PORT:                5050
+      TIMESCALE_URL:       postgresql://mdp:mdp_secret@db:5432/marketdata
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      SLACK_WEBHOOK_URL:   ${SLACK_WEBHOOK_URL:-}
+    command: >
+      gunicorn "dashboard.app:app"
+        --bind 0.0.0.0:5050
+        --worker-class gthread
+        --workers 1
+        --threads 4
+        --timeout 120
 
-  # ── Pipeline (yfinance polling) ───────────────────────────────────────────
-  pipeline:
+  # Streamlit Research Dashboard
+  research:
     build: .
-    command: python main.py --symbols AAPL MSFT SPY NVDA TSLA --interval 60
-    volumes:
-      - ./data:/app/data      # writes to same DB as dashboard
-      - ./logs:/app/logs
-    depends_on:
-      - dashboard
     restart: unless-stopped
+    depends_on:
+      - db
+    ports:
+      - "8501:8501"
+    environment:
+      TIMESCALE_URL: postgresql://mdp:mdp_secret@db:5432/marketdata
+    command: streamlit run streamlit_app/app.py --server.port=8501 --server.address=0.0.0.0
 
-  # ── Pipeline (Alpaca real-time stream) ───────────────────────────────────
-  # Uncomment to use Alpaca instead of yfinance polling.
-  # Requires ALPACA_API_KEY and ALPACA_SECRET_KEY.
-  #
-  # alpaca:
-  #   build: .
-  #   command: python -c "
-  #     from src.alpaca_stream import AlpacaStream
-  #     from src.storage import DataStore
-  #     from src.signals import SignalDetector
-  #     from src.alerts import AlertManager
-  #     store = DataStore(); store.initialize()
-  #     detector = SignalDetector()
-  #     alerts = AlertManager()
-  #     def on_tick(tick):
-  #         store.insert_tick(tick)
-  #         history = store.get_recent(tick.symbol, 50)
-  #         for sig in detector.detect(tick, history): alerts.fire(sig)
-  #     AlpacaStream(['AAPL','MSFT','SPY'], on_tick).run()
-  #   "
-  #   volumes:
-  #     - ./data:/app/data
-  #     - ./logs:/app/logs
-  #   environment:
-  #     - ALPACA_API_KEY=${ALPACA_API_KEY}
-  #     - ALPACA_SECRET_KEY=${ALPACA_SECRET_KEY}
-  #   restart: unless-stopped
+volumes:
+  timescale_data:
